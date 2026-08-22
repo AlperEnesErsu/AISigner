@@ -1,61 +1,111 @@
-# Dağıtım (Deployment) Notları
+# AISigner — Dağıtım (Deployment) Rehberi
 
-## Durum Yönetimi: Tek Instance vs Çok Instance
+Bu belge AISigner'ı **Out Plane** (yönetilen PostgreSQL + Docker/GitHub build) veya
+benzeri bir PaaS üzerinde **güvenli** biçimde canlıya almak içindir.
 
-Bazı özellikler **proses-yerel (in-memory)** durum kullanır:
+> Mimari özet için `CLAUDE.md`, çok-instance/ölçekleme notları için ilgili başlığa bakın.
 
-| Özellik | Dosya | Durum tipi |
+---
+
+## 1. Mimari ve gereksinimler
+
+| Bileşen | Değer |
+|---|---|
+| Runtime | Node 20 (Docker imajı: `node:20-bookworm-slim`) |
+| Uygulama | Next.js 15 standalone, port **3000** |
+| Veritabanı | PostgreSQL 14–18, **SSL zorunlu** |
+| AI (opsiyonel) | Google Vertex AI / Gemini — kimlik JSON'u env'den |
+| Dosya yükleme | Yerel disk `/app/uploads` (kalıcılık için Volume gerekir) |
+
+Konteyner açılışta şunu yapar (`docker-entrypoint.sh`):
+1. `GCP_CREDENTIALS_JSON` env'i varsa `/app/gcp-credentials.json`'a **600 izinle** yazar.
+2. `npx prisma migrate deploy` — bekleyen şema göçlerini uygular.
+3. Uygulamayı başlatır. **Root değil, `node` kullanıcısı** olarak koşar.
+
+---
+
+## 2. Ortam değişkenleri (Environment variables)
+
+Out Plane konsolunda servisin **Variables** bölümüne girilir.
+
+### Zorunlu
+
+| Değişken | Açıklama | Örnek / Not |
 |---|---|---|
-| Rate limiting | `src/lib/rate-limit.ts` | `Map` (proses-yerel) |
-| Şifre sıfırlama token'ları | `src/app/api/auth/forgot-password/verify/route.ts` | `Map` (proses-yerel) |
-| Yüklenen dosyalar | `src/app/api/steps/[stepId]/files/route.ts` | Yerel disk (`process.cwd()/uploads`) |
+| `DATABASE_URL` | Postgres bağlantısı. **`?sslmode=require` ekleyin.** | `postgresql://user:pass@host:5432/aisigner?sslmode=require` |
+| `AUTH_SECRET` | **JWT imzalama sırrı** (oturum + middleware). Yoksa uygulama prod'da açılmaz. **Yeni ve güçlü üretin.** | `openssl rand -base64 32` çıktısı |
+| `NEXTAUTH_URL` | Uygulamanın public URL'i (NextAuth callback'leri). | `https://aisigner.example.com` |
 
-### ✅ Tek instance (mevcut kurulum — Docker tek container)
+> **Dikkat:** Bu proje NextAuth v4 ile **`AUTH_SECRET`** kullanır (`NEXTAUTH_SECRET` DEĞİL).
+> Bir platform şablonu `NEXTAUTH_SECRET` isterse, `AUTH_SECRET`'i mutlaka ayrıca girin.
 
-Yukarıdakiler **olduğu gibi çalışır**. Tek dikkat edilmesi gereken:
+### Güvenlik için önerilen
 
-- `uploads/` dizini **kalıcı bir volume** olmalı; aksi halde her yeniden deploy'da
-  dosyalar silinir. `docker-compose.yml` içindeki `app` servisi bunu
-  `uploads_data` named volume ile sağlar.
+| Değişken | Açıklama |
+|---|---|
+| `NEXTAUTH_SECRET` | Parola-sıfırlama token'larının imzalanmasında kullanılır. Verilmezse sabit bir decoy fallback devreye girer → token'lar tahmin edilebilir olur. **Ayrı, güçlü bir değer girin.** |
 
-### ⚠️ Çok instance / Serverless (Vercel, birden fazla replica, autoscaling)
+### AI için (opsiyonel — verilmezse AI özellikleri mock'a düşer)
 
-Proses-yerel durum **çalışmaz**:
+| Değişken | Açıklama |
+|---|---|
+| `GOOGLE_CLOUD_PROJECT` | GCP proje kimliği (ör. `projects-498900`). |
+| `GCP_CREDENTIALS_JSON` | Service-account JSON'unun **tam içeriği** (dosya değil). Açılışta dosyaya yazılır. |
 
-- **Rate limiting**: Her instance ayrı sayar → limit etkisiz kalır.
-- **Şifre sıfırlama token'ları**: Adım 2'de token'ı üreten instance ile Adım 3'e
-  gelen istek farklı instance'a düşerse token bulunamaz → akış kopar.
-- **Dosyalar**: Bir instance'a yüklenen dosya diğerinden okunamaz.
+> **`GOOGLE_APPLICATION_CREDENTIALS` girmeyin** — entrypoint onu otomatik `/app/gcp-credentials.json`'a ayarlar.
 
-**Geçiş planı:**
+### Diğer (opsiyonel)
 
-1. **Redis** ekle (rate-limit + reset token):
-   - `rate-limit.ts` içindeki `Map`'i Redis `INCR` + `EXPIRE` ile değiştir.
-   - `resetTokens` Map'ini Redis `SETEX` (TTL'li) ile değiştir.
-2. **Object storage** (GCS/S3) ekle (dosya yükleme):
-   - `files/route.ts` ve `files/[fileId]/route.ts` içindeki `fs` çağrılarını
-     imzalı URL veya stream tabanlı GCS/S3 erişimiyle değiştir.
-   - `StepFile.storedName` zaten benzersiz; bucket key olarak kullanılabilir.
+| Değişken | Varsayılan | Açıklama |
+|---|---|---|
+| `GCS_BUCKET` | _(yok)_ | **#197** — Dosya yüklemelerinin kalıcılığı. Verilirse yüklemeler bu GCS bucket'ına yazılır (deploy'da silinmez, çok-instance ölçeklenir). Kimlik: mevcut `GCP_CREDENTIALS_JSON` (ADC). Verilmezse yerel disk. |
+| `GITHUB_ORG` | `Posinowa` | GitHub çalışma alanı URL'lerinde kullanılan org. |
+| `PORT` | `3000` | Platform farklı bir port dayatıyorsa. |
 
-Bu değişiklikler izole edilebilir: çağrı yerleri (call site) zaten tek bir
-yardımcı fonksiyona soyutlanabilecek şekilde dar tutulmuştur.
+---
 
-## Ortam Değişkenleri
+## 3. Out Plane adımları
 
-Üretimde mutlaka tanımlı olmalı (`.env.example`'a bakın):
+1. **PostgreSQL oluştur**: Out Plane'de yönetilen Postgres ekle; bağlantı dizesini al,
+   sonuna `?sslmode=require` ekleyip `DATABASE_URL` olarak kaydet.
+2. **Servis oluştur**: Repo'yu (`Posinowa/AISigner`) bağla — Out Plane kök dizindeki
+   `Dockerfile` ile imajı kendisi build eder. (Alternatif: hazır imaj push'la.)
+3. **Değişkenleri gir**: Yukarıdaki tablodaki tüm zorunlu + kullanacağın opsiyonel değişkenler.
+4. **Deploy et.** İlk açılışta `migrate deploy` şemayı kurar. Logda şunları görmelisin:
+   `→ Prisma migrate deploy çalışıyor...` ve `→ Uygulama başlatılıyor...`.
+5. **Doğrula**: `https://<url>/api/health` 200 dönmeli; ardından `/signin`.
 
-- `AUTH_SECRET` — güçlü rastgele değer (`openssl rand -base64 32`). Üretimde
-  eksikse uygulama açılışta hata fırlatır.
-- `DATABASE_URL` — Compose ağında host `db`, yerelde `localhost`.
-- `GOOGLE_CLOUD_PROJECT` + `GOOGLE_APPLICATION_CREDENTIALS` — Vertex AI için
-  GCP servis hesabı. `gcp-credentials.json` repoya **commit edilmez** (gitignore'da).
+### İlk admin'i güvenli oluştur
 
-## Veritabanı Migrasyonları
+`npm run seed` **prod'da ÇALIŞTIRILMAZ** (aşağıdaki güvenlik listesine bakın). İlk yönetici için:
+tek seferlik güvenli bir script ile veya DB'ye elle, **güçlü ve benzersiz** bir parolayla
+(argon2 hash — `@node-rs/argon2`'nin `hash()` fonksiyonu; `scripts/seed.ts` örnek alınabilir)
+bir ADMIN kullanıcı ekleyin.
 
-`prisma/migrations/` klasörü mevcut (12 migration). Docker `CMD`
-`prisma migrate deploy` çalıştırır → container başlangıcında şema otomatik
-güncellenir, ekstra işlem gerekmez.
+---
 
-Yeni şema değişikliklerinde `npx prisma migrate dev --name <ad>` ile yeni bir
-migration üretin. Üretimde yalnızca `prisma db push` kullanmak migration
-geçmişini bozabilir; geçmişi tutarlı tutmak için migration akışını tercih edin.
+## 4. 🔒 Güvenlik kontrol listesi (deploy öncesi)
+
+- [ ] **`gcp-credentials.json` repoda YOK.** `.gitignore` + `.dockerignore` korur; imaja da girmez.
+- [ ] **`.env` repoda YOK.** Tüm sırlar platformun Variables bölümünde.
+- [ ] **`NEXTAUTH_SECRET` yeni üretildi** (`openssl rand -base64 32`) — demo/örnek değer DEĞİL.
+- [ ] **`DATABASE_URL` içinde `sslmode=require`** var.
+- [ ] **Prod'da `npm run seed` çalıştırılmadı.** Seed; `admin@example.com` / `mentor@example.com`
+      / `student@example.com` kullanıcılarını **sabit zayıf parola** ile açar — canlıda arka kapı olur.
+- [ ] İlk admin **güçlü, benzersiz parolayla** oluşturuldu.
+- [ ] Konteyner **root değil** (`node` kullanıcısı) — Dockerfile bunu sağlar.
+- [ ] `GCP_CREDENTIALS_JSON` yalnızca platform secret'ı olarak duruyor; logda içeriği görünmüyor.
+
+---
+
+## 5. Kalıcılık ve ölçekleme (dikkat)
+
+- **Dosya yüklemeleri (kalıcılık)** — iki seçenek (#197):
+  - **`GCS_BUCKET` ver (önerilen):** yüklemeler GCS'e yazılır, deploy'da silinmez, çok-instance
+    ölçeklenir. Ek kimlik gerekmez (mevcut `GCP_CREDENTIALS_JSON` kullanılır). Bucket'ı önceden
+    oluştur; servis hesabına `Storage Object Admin` yetkisi ver.
+  - **`GCS_BUCKET` verme:** yerel disk `/app/uploads`. Volume bağlanmazsa **her deploy'da silinir**;
+    kalıcılık için Out Plane Volume'ünü `/app/uploads`'a bağla (tek-instance).
+- **Tek-instance varsayımı**: `rate-limit.ts`, forgot-password token'ları ve `metrics.ts`
+  bellek-içi (process-local) tutulur. **Birden çok instance** çalıştıracaksanız bunlar
+  instance'lar arasında paylaşılmaz → Redis'e taşıyın. Tek instance ile sorun yok.

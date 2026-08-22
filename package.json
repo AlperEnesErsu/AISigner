@@ -9,12 +9,14 @@
     "start": "next start",
     "start:docker": "next start -H 0.0.0.0 -p ${PORT:-3000}",
     "lint": "eslint",
-    "seed": "tsx scripts/seed.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "check:migrations": "node scripts/check-migrations.mjs",
+    "seed": "tsx scripts/seed.ts",
     "test:ai": "tsx --env-file=.env scripts/test-ai.ts"
   },
   "dependencies": {
+    "@google-cloud/storage": "^7.21.0",
     "@google-cloud/vertexai": "^1.10.0",
     "@hookform/resolvers": "^5.2.1",
     "@node-rs/argon2": "^2.0.2",
@@ -23,12 +25,14 @@
     "@radix-ui/react-slot": "^1.2.3",
     "class-variance-authority": "^0.7.1",
     "lucide-react": "^0.544.0",
-    "next": "15.5.0",
-    "next-auth": "^4.24.11",
+    "next": "^15.5.22",
+    "next-auth": "^4.24.15",
     "prisma": "^6.15.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-hook-form": "^7.62.0",
+    "react-markdown": "^9.1.0",
+    "remark-gfm": "^4.0.1",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.3.1",
     "zod": "^4.1.7"
@@ -36,6 +40,9 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
@@ -43,9 +50,15 @@
     "@typescript-eslint/parser": "^8.41.0",
     "eslint": "^9",
     "eslint-config-next": "15.5.0",
+    "jsdom": "^29.1.1",
     "tailwindcss": "^4",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
-    "vitest": "^4.1.8"
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^3.2.6"
+  },
+  "overrides": {
+    "sharp": "^0.35.0",
+    "postcss": "^8.4.31"
   }
 }

@@ -1,9 +1,13 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Plus, Pencil, Trash2, X, ArrowLeft, FolderKanban } from "lucide-react";
+import { Plus, Pencil, Trash2, X, ArrowLeft, FolderKanban, Github, AlertCircle, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
+import { useModalA11y } from "@/components/ui/useModalA11y";
+import { extractApiErrorMessage } from "@/lib/api-error-message";
+import { markdownPreview } from "@/lib/markdown-preview";
 
 type ProjectTemplate = {
   id: string;
@@ -11,6 +15,7 @@ type ProjectTemplate = {
   description: string;
   difficulty: "EASY" | "MEDIUM" | "HARD";
   track: string[];
+  githubRepoUrl?: string | null;
 };
 
 type FormData = {
@@ -18,15 +23,17 @@ type FormData = {
   description: string;
   difficulty: "EASY" | "MEDIUM" | "HARD";
   track: string;
+  githubRepoUrl: string;
 };
 
 const difficultyColors = {
-  EASY: "bg-emerald-50 text-emerald-700 border border-emerald-200",
-  MEDIUM: "bg-amber-50 text-amber-700 border border-amber-200",
-  HARD: "bg-red-50 text-red-700 border border-red-200",
+  EASY: "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200",
+  MEDIUM: "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200",
+  HARD: "bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 border border-red-200",
 };
 
 export default function ProjectsPage() {
+  const confirm = useConfirm();
   const [templates, setTemplates] = useState<ProjectTemplate[]>([]);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -35,13 +42,18 @@ export default function ProjectsPage() {
     description: "",
     difficulty: "EASY",
     track: "",
+    githubRepoUrl: "",
   });
   const [loading, setLoading] = useState(false);
   const [pageLoading, setPageLoading] = useState(true); // Sayfa yükleniyor durumu
+  // #59: Fetch başarısız olduğunda "hiç şablon yok" ile "istek başarısız oldu"
+  // birbirine karışmasın diye ayrı bir hata durumu.
+  const [loadError, setLoadError] = useState(false);
 
   const loadTemplates = useCallback(async () => {
     try {
       setPageLoading(true);
+      setLoadError(false);
       const res = await fetch("/api/admin/project-templates");
 
       if (!res.ok) {
@@ -52,7 +64,7 @@ export default function ProjectsPage() {
       setTemplates(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error("Failed to load templates:", error);
-      setTemplates([]);
+      setLoadError(true);
     } finally {
       setPageLoading(false);
     }
@@ -63,10 +75,13 @@ export default function ProjectsPage() {
   }, [loadTemplates]);
 
   function resetForm() {
-    setForm({ title: "", description: "", difficulty: "EASY", track: "" });
+    setForm({ title: "", description: "", difficulty: "EASY", track: "", githubRepoUrl: "" });
     setIsFormOpen(false);
     setEditingId(null);
   }
+
+  // Modal a11y: Escape ile kapat + açılışta panele odak.
+  const formModalRef = useModalA11y(isFormOpen, resetForm);
 
   function startEdit(template: ProjectTemplate) {
     setForm({
@@ -74,6 +89,7 @@ export default function ProjectsPage() {
       description: template.description,
       difficulty: template.difficulty,
       track: template.track.join(", "),
+      githubRepoUrl: template.githubRepoUrl ?? "",
     });
     setEditingId(template.id);
     setIsFormOpen(true);
@@ -87,6 +103,8 @@ export default function ProjectsPage() {
       const payload = {
         ...form,
         track: form.track.split(",").map(t => t.trim()).filter(Boolean),
+        // #49: Boş input -> null (repo linki opsiyonel; boş string geçersiz URL sayılmasın).
+        githubRepoUrl: form.githubRepoUrl.trim() === "" ? null : form.githubRepoUrl.trim(),
       };
 
       let res;
@@ -104,19 +122,32 @@ export default function ProjectsPage() {
         });
       }
 
-      if (!res.ok) throw new Error("Failed to save template");
+      if (!res.ok) {
+        // #114: string / fieldErrors ayrımı ortak helper'da (test edilen tek kaynak).
+        const data = await res.json().catch(() => null);
+        toast.error(extractApiErrorMessage(data, "Şablon kaydedilemedi."));
+        return;
+      }
 
       await loadTemplates();
       resetForm();
+      toast.success(editingId ? "Şablon güncellendi." : "Şablon oluşturuldu.");
     } catch (error) {
       console.error("Failed to save template:", error);
+      toast.error("Bağlantı hatası. Lütfen tekrar deneyin.");
     } finally {
       setLoading(false);
     }
   }
 
   async function handleDelete(id: string) {
-    if (!confirm("Bu proje şablonunu silmek istediğinizden emin misiniz?")) return;
+    const ok = await confirm({
+      title: "Proje şablonunu sil",
+      description: "Bu proje şablonunu silmek istediğinizden emin misiniz?",
+      confirmLabel: "Sil",
+      danger: true,
+    });
+    if (!ok) return;
 
     try {
       const res = await fetch(`/api/admin/project-templates/${id}`, { 
@@ -138,12 +169,12 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/30">
-      <div className="max-w-6xl mx-auto p-6">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/30 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950">
+      <div className="max-w-6xl mx-auto p-4 sm:p-6">
       {/* Geri linki */}
       <Link
         href="/admin-dashboard"
-        className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700 transition-colors mb-4"
+        className="inline-flex items-center gap-1.5 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors mb-4"
       >
         <ArrowLeft className="w-4 h-4" />
         Yönetici Paneline Dön
@@ -156,8 +187,8 @@ export default function ProjectsPage() {
             <FolderKanban className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Proje Şablonları</h1>
-            <p className="text-slate-500 mt-0.5 text-sm">Öğrenciler için proje şablonlarını yönet</p>
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100 tracking-tight">Proje Şablonları</h1>
+            <p className="text-slate-500 dark:text-slate-400 mt-0.5 text-sm">Öğrenciler için proje şablonlarını yönet</p>
           </div>
         </div>
         <button
@@ -172,14 +203,22 @@ export default function ProjectsPage() {
       {/* Form Modal */}
       {isFormOpen && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+          <div
+            ref={formModalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={editingId ? "Şablonu Düzenle" : "Yeni Şablon Ekle"}
+            tabIndex={-1}
+            className="bg-white dark:bg-slate-900 rounded-xl shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto outline-none"
+          >
             <div className="flex justify-between items-center p-6 border-b">
               <h2 className="text-xl font-semibold">
                 {editingId ? "Şablonu Düzenle" : "Yeni Şablon Ekle"}
               </h2>
               <button
                 onClick={resetForm}
-                className="text-slate-400 hover:text-slate-600"
+                aria-label="Kapat"
+                className="text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300"
               >
                 <X className="w-6 h-6" />
               </button>
@@ -187,45 +226,45 @@ export default function ProjectsPage() {
 
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-2">
                   Başlık
                 </label>
                 <input
                   type="text"
                   value={form.title}
                   onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   placeholder="Proje başlığı girin"
                   required
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-2">
                   Açıklama (Markdown)
                 </label>
                 <textarea
                   value={form.description}
                   onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
                   rows={8}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
+                  className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
                   placeholder="Proje açıklamasını markdown formatında yazın..."
                   required
                 />
-                <p className="text-xs text-slate-500 mt-1">
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                   Markdown formatını kullanabilirsiniz (# başlık, **kalın**, *italik*, vb.)
                 </p>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-2">
                     Zorluk Seviyesi
                   </label>
                   <select
                     value={form.difficulty}
                     onChange={e => setForm(f => ({ ...f, difficulty: e.target.value as "EASY" | "MEDIUM" | "HARD" }))}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   >
                     <option value="EASY">Kolay</option>
                     <option value="MEDIUM">Orta</option>
@@ -234,27 +273,40 @@ export default function ProjectsPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-2">
                     Kategoriler
                   </label>
                   <input
                     type="text"
                     value={form.track}
                     onChange={e => setForm(f => ({ ...f, track: e.target.value }))}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     placeholder="React, Next.js, TypeScript..."
                   />
-                  <p className="text-xs text-slate-500 mt-1">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                     Virgülle ayırarak birden fazla kategori girebilirsiniz
                   </p>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-2">
+                  GitHub Repository URL (opsiyonel)
+                </label>
+                <input
+                  type="text"
+                  value={form.githubRepoUrl}
+                  onChange={e => setForm(f => ({ ...f, githubRepoUrl: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="https://github.com/kullanici/repo"
+                />
               </div>
 
               <div className="flex justify-end gap-3 pt-4 border-t">
                 <button
                   type="button"
                   onClick={resetForm}
-                  className="px-4 py-2 text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                  className="px-4 py-2 text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors"
                 >
                   İptal
                 </button>
@@ -274,17 +326,32 @@ export default function ProjectsPage() {
       {/* Loading State */}
       {pageLoading ? (
         <div className="flex items-center justify-center py-12">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-          <span className="ml-3 text-slate-600">Şablonlar yükleniyor...</span>
+          <Loader2 className="w-8 h-8 animate-spin text-blue-600 dark:text-blue-400" />
+          <span className="ml-3 text-slate-600 dark:text-slate-300">Şablonlar yükleniyor...</span>
+        </div>
+      ) : loadError ? (
+        /* #59: "Hiç şablon yok" ile "istek başarısız oldu" karışmasın diye ayrı hata durumu. */
+        <div className="text-center py-12">
+          <div className="w-14 h-14 rounded-2xl bg-red-50 dark:bg-red-950/40 flex items-center justify-center mx-auto mb-4">
+            <AlertCircle className="w-7 h-7 text-red-500 dark:text-red-400" />
+          </div>
+          <h3 className="text-lg font-medium text-slate-900 dark:text-slate-100 mb-2">Şablonlar yüklenemedi</h3>
+          <p className="text-slate-600 dark:text-slate-300 mb-4">Bağlantıda bir sorun oluştu. Lütfen tekrar deneyin.</p>
+          <button
+            onClick={loadTemplates}
+            className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
+          >
+            Tekrar Dene
+          </button>
         </div>
       ) : (
         <>
           {/* Templates Grid */}
           {templates.length === 0 ? (
             <div className="text-center py-12">
-              <div className="text-slate-400 text-6xl mb-4">📝</div>
-              <h3 className="text-lg font-medium text-slate-900 mb-2">Henüz şablon yok</h3>
-              <p className="text-slate-600 mb-4">İlk proje şablonunuzu ekleyerek başlayın</p>
+              <div className="text-slate-400 dark:text-slate-500 text-6xl mb-4">📝</div>
+              <h3 className="text-lg font-medium text-slate-900 dark:text-slate-100 mb-2">Henüz şablon yok</h3>
+              <p className="text-slate-600 dark:text-slate-300 mb-4">İlk proje şablonunuzu ekleyerek başlayın</p>
               <button
                 onClick={() => setIsFormOpen(true)}
                 className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
@@ -296,10 +363,10 @@ export default function ProjectsPage() {
           ) : (
             <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
               {templates.map(template => (
-                <div key={template.id} className="bg-white rounded-lg shadow-sm border border-slate-200 hover:shadow-md transition-shadow">
+                <div key={template.id} className="bg-white dark:bg-slate-900 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 hover:shadow-md transition-shadow">
                   <div className="p-6">
                     <div className="flex justify-between items-start mb-3">
-                      <h3 className="text-lg font-semibold text-slate-900 line-clamp-2">
+                      <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 line-clamp-2">
                         {template.title}
                       </h3>
                       <span className={`px-2 py-1 text-xs font-medium rounded-full ${difficultyColors[template.difficulty]}`}>
@@ -308,38 +375,53 @@ export default function ProjectsPage() {
                       </span>
                     </div>
 
-                    <p className="text-slate-600 text-sm mb-4 line-clamp-3">
-                      {template.description.slice(0, 120)}...
+                    {/* #91: Markdown soyulmuş, kelime sınırında ve koşullu ellipsis'li önizleme. */}
+                    <p className="text-slate-600 dark:text-slate-300 text-sm mb-4 line-clamp-3">
+                      {markdownPreview(template.description, 120)}
                     </p>
 
                     <div className="flex flex-wrap gap-1 mb-4">
                       {template.track.slice(0, 3).map((tag, index) => (
-                        <span key={index} className="px-2 py-1 text-xs bg-slate-100 text-slate-700 rounded">
+                        <span key={index} className="px-2 py-1 text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded">
                           {tag}
                         </span>
                       ))}
                       {template.track.length > 3 && (
-                        <span className="px-2 py-1 text-xs bg-slate-100 text-slate-500 rounded">
+                        <span className="px-2 py-1 text-xs bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded">
                           +{template.track.length - 3} daha
                         </span>
                       )}
                     </div>
 
+                    {template.githubRepoUrl && (
+                      <a
+                        href={template.githubRepoUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 mb-4 transition-colors"
+                      >
+                        <Github className="w-3.5 h-3.5" />
+                        {template.githubRepoUrl.replace(/^https:\/\/github\.com\//, "")}
+                      </a>
+                    )}
+
                     <div className="flex justify-between items-center">
-                      <span className="text-xs text-slate-500">
+                      <span className="text-xs text-slate-500 dark:text-slate-400">
                         ID: {template.id.slice(0, 8)}...
                       </span>
                       <div className="flex gap-2">
                         <button
                           onClick={() => startEdit(template)}
-                          className="p-2 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                          className="p-2 text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-lg transition-colors"
+                          aria-label={`${template.title} şablonunu düzenle`}
                           title="Düzenle"
                         >
                           <Pencil className="w-4 h-4" />
                         </button>
                         <button
                           onClick={() => handleDelete(template.id)}
-                          className="p-2 text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          className="p-2 text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors"
+                          aria-label={`${template.title} şablonunu sil`}
                           title="Sil"
                         >
                           <Trash2 className="w-4 h-4" />

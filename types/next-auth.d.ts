@@ -1,7 +1,8 @@
 // 🔧 Bu dosya, NextAuth'un varsayılan tiplerini genişletmek için kullanılır.
 // Amaç: session, JWT ve user objelerine özel alanlar ekleyerek TypeScript desteğini tam hale getirmek.
 
-import NextAuth from "next-auth"
+// Modül augmentation için yan-etkili import yeterli; default binding kullanılmıyordu.
+import "next-auth"
 
 declare module "next-auth" {
   
@@ -12,6 +13,7 @@ declare module "next-auth" {
       name?: string
       email?: string
       role?: string
+      accountStatus?: string
     }
   }
 
@@ -19,10 +21,12 @@ declare module "next-auth" {
     id?: string
     sessionToken?: string
     role?: string
+    accountStatus?: string
   }
 
   interface User {
     id?: string
     role?: string
+    accountStatus?: string
   }
 }
